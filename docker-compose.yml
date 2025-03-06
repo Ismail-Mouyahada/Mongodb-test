@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo
+    container_name: mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - all_network
+
+  api:
+    build: ./backend
+    container_name: api_service
+    restart: always
+    depends_on:
+      - mongodb
+      - message_broker
+    ports:
+      - "5000:5000"
+    environment:
+      MONGO_URI: mongodb://admin:password@mongodb:27017/?authSource=admin
+    networks:
+      - all_network
+
+  frontend:
+    build: ./frontend
+    container_name: frontend_service
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+    networks:
+      - all_network
+
+  gateway:
+    build: ./gateway
+    container_name: api_gateway
+    restart: always
+    depends_on:
+      - api
+      - frontend
+    ports:
+      - "80:80"
+    networks:
+      - all_network
+
+  message_broker:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"  # Standard RabbitMQ port
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: user
+      RABBITMQ_DEFAULT_PASS: password
+    networks:
+      - all_network
+
+volumes:
+  mongo_data:
+
+networks:
+  all_network:
+    driver: bridge
