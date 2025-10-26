@@ -1,73 +1,253 @@
-version: "3.9"
+Absolument ! Voici un exemple de fichier `docker-compose.yml` pour un projet TypeScript, incluant une configuration pour le développement et la production, ainsi que les services courants comme une base de données PostgreSQL.
 
+Ce setup part du principe que vous avez un `Dockerfile` à la racine de votre projet et que votre `package.json` contient des scripts pour démarrer l'application en développement (`npm run dev`) et en production (`npm start`).
+
+---
+
+**Structure du projet recommandée :**
+
+```
+my-ts-project/
+├── src/
+│   └── index.ts
+├── Dockerfile
+├── package.json
+├── tsconfig.json
+├── .env  <-- Fichier pour les variables d'environnement (non versionné)
+├── docker-compose.yml
+└── docker-compose.dev.yml
+```
+
+---
+
+### `Dockerfile` (Exemple)
+
+Avant le `docker-compose.yml`, vous aurez besoin d'un `Dockerfile` pour construire l'image de votre application TypeScript.
+
+```dockerfile
+# Stage 1: Build the TypeScript application
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package.json and package-lock.json to install dependencies
+COPY package*.json ./
+
+# Install production dependencies first (might be used for dev or prod)
+RUN npm install --omit=dev
+
+# Copy all source code
+COPY . .
+
+# Build the TypeScript project
+RUN npm run build
+
+# Stage 2: Run the application
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy production dependencies from builder stage
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy compiled JavaScript files and other necessary production files
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+
+# Expose the port your app listens on (e.g., 3000)
+EXPOSE 3000
+
+# Command to run the application in production
+CMD ["npm", "start"]
+```
+
+---
+
+### `.env` (Exemple - à ne pas commiter !)
+
+Créez un fichier `.env` à la racine de votre projet pour stocker les variables d'environnement sensibles ou spécifiques à votre environnement local. Docker Compose lira automatiquement ce fichier si vous ne définissez pas explicitement `env_file`.
+
+```env
+# Database Configuration
+POSTGRES_DB=my_ts_app_db
+POSTGRES_USER=myuser
+POSTGRES_PASSWORD=mypassword_secure
+DB_HOST=db # Service name in docker-compose
+DB_PORT=5432
+
+# Application Configuration
+NODE_ENV=development # Ceci sera surchargé par docker-compose.yml en prod
+APP_PORT=3000
+```
+
+---
+
+### `docker-compose.yml` (Configuration pour la production)
+
+Ce fichier est la configuration principale, optimisée pour un déploiement en production.
+
+```yaml
+# Version de la spécification Docker Compose
+version: '3.8'
+
+# Définition des services constituant votre application
 services:
-  mongodb:
-    image: mongo
-    container_name: mongodb
-    restart: always
+  # Service de l'application TypeScript (backend)
+  app:
+    # Construit l'image Docker à partir du Dockerfile situé dans le répertoire courant
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Expose le port de l'application sur le port de l'hôte
+    # Format: "HOST_PORT:CONTAINER_PORT"
     ports:
-      - "27017:27017"
+      - "${APP_PORT:-3000}:3000"
+    # Définit les variables d'environnement pour le service
+    # Elles peuvent être lues depuis le fichier .env ou directement ici
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password
+      NODE_ENV: production
+      # Variables pour la connexion à la base de données
+      DATABASE_URL: postgres://${POSTGRES_USER:-myuser}:${POSTGRES_PASSWORD:-mypassword}@${DB_HOST:-db}:${DB_PORT:-5432}/${POSTGRES_DB:-my_ts_app_db}
+      # Ajoutez d'autres variables d'environnement nécessaires à votre application en production
+      # MY_API_KEY: ${MY_API_KEY}
+    # Indique que le service 'app' dépend du service 'db' et ne démarrera qu'après 'db'.
+    # Note: cela n'attend pas que la base de données soit "prête" à accepter des connexions.
+    # Pour une attente plus robuste, utilisez un script d'entrée ou des outils comme 'wait-for-it'.
+    depends_on:
+      - db
+    # Politique de redémarrage : redémarre le conteneur sauf s'il est arrêté explicitement.
+    restart: unless-stopped
+    # Nom du conteneur (optionnel, facilite l'identification)
+    container_name: ts-app_production
+
+  # Service de la base de données PostgreSQL
+  db:
+    # Utilise l'image officielle PostgreSQL
+    image: postgres:14-alpine
+    # Définit les variables d'environnement spécifiques à PostgreSQL
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-my_ts_app_db}
+      POSTGRES_USER: ${POSTGRES_USER:-myuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mypassword}
+    # Persiste les données de la base de données dans un volume nommé.
+    # Ceci garantit que les données ne sont pas perdues lorsque le conteneur est supprimé.
     volumes:
-      - mongo_data:/data/db
-    networks:
-      - all_network
+      - db_data:/var/lib/postgresql/data
+    # Politique de redémarrage
+    restart: unless-stopped
+    # Nom du conteneur
+    container_name: postgres_db_production
 
-  api:
-    build: ./backend
-    container_name: api_service
-    restart: always
-    depends_on:
-      - mongodb
-      - message_broker
-    ports:
-      - "5000:5000"
-    environment:
-      MONGO_URI: mongodb://admin:password@mongodb:27017/?authSource=admin
-    networks:
-      - all_network
-
-  frontend:
-    build: ./frontend
-    container_name: frontend_service
-    restart: always
-    depends_on:
-      - api
-    ports:
-      - "3000:3000"
-    networks:
-      - all_network
-
-  gateway:
-    build: ./gateway
-    container_name: api_gateway
-    restart: always
-    depends_on:
-      - api
-      - frontend
-    ports:
-      - "80:80"
-    networks:
-      - all_network
-
-  message_broker:
-    image: rabbitmq:3-management
-    container_name: rabbitmq
-    restart: always
-    ports:
-      - "5672:5672"  # Standard RabbitMQ port
-      - "15672:15672"  # Management UI
-    environment:
-      RABBITMQ_DEFAULT_USER: user
-      RABBITMQ_DEFAULT_PASS: password
-    networks:
-      - all_network
-
+# Définition des volumes nommés
+# Les volumes sont utilisés pour persister les données de manière fiable,
+# indépendamment du cycle de vie des conteneurs.
 volumes:
-  mongo_data:
+  db_data: # Volume pour les données PostgreSQL
+    driver: local # Utilise le pilote de volume local par défaut
+```
 
-networks:
-  all_network:
-    driver: bridge
+---
+
+### `docker-compose.dev.yml` (Configuration pour le développement)
+
+Ce fichier est une surcharge (override) du `docker-compose.yml` principal, ajoutant ou modifiant des configurations spécifiques au développement (ex: hot-reloading, montage de code source).
+
+Pour l'utiliser, vous devrez exécuter `docker-compose -f docker-compose.yml -f docker-compose.dev.yml up`.
+
+```yaml
+# Version de la spécification Docker Compose
+version: '3.8'
+
+# Surcharge ou ajoute des configurations pour les services existants
+services:
+  # Surcharge du service 'app' pour le développement
+  app:
+    # Pour le développement, on monte le code source local dans le conteneur.
+    # Cela permet au hot-reloading de fonctionner et de voir les changements sans reconstruire l'image.
+    # Format: "HOST_PATH:CONTAINER_PATH"
+    volumes:
+      # Monte le répertoire courant du projet (où se trouve docker-compose.yml) dans /app du conteneur.
+      - .:/app
+      # Monte un volume nommé pour node_modules.
+      # Ceci est crucial car si vous montez tout le répertoire hôte,
+      # les node_modules installés par Docker peuvent être écrasés ou causer des problèmes de compatibilité
+      # avec l'OS de l'hôte. Ce volume garantit que les dépendances sont installées et utilisées dans le conteneur.
+      - node_modules_volume:/app/node_modules
+    # Change le point d'entrée pour lancer l'application en mode développement
+    # (par exemple, avec ts-node-dev ou nodemon pour le hot-reloading)
+    command: npm run dev
+    # Surcharge des variables d'environnement pour le développement
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://${POSTGRES_USER:-myuser}:${POSTGRES_PASSWORD:-mypassword}@${DB_HOST:-db}:${DB_PORT:-5432}/${POSTGRES_DB:-my_ts_app_db}
+      # Ajoutez d'autres variables d'environnement spécifiques au développement si nécessaire
+    # Nom du conteneur pour le développement
+    container_name: ts-app_development
+
+  # Vous pourriez vouloir exposer le port de la DB pour des outils de développement, mais ce n'est pas toujours recommandé.
+  # db:
+  #   ports:
+  #     - "5432:5432" # N'exposez que si nécessaire pour des outils externes
+
+# Définition des volumes nommés spécifiques au développement
+volumes:
+  node_modules_volume: # Volume pour les dépendances npm
+    driver: local
+```
+
+---
+
+### Instructions d'utilisation
+
+1.  **Créez vos fichiers :** Assurez-vous d'avoir un `Dockerfile`, un `package.json` (avec les scripts `dev` et `start`), un `tsconfig.json`, et les fichiers `docker-compose.yml` et `docker-compose.dev.yml` comme ci-dessus. N'oubliez pas le fichier `.env`.
+
+2.  **Scripts `package.json` (Exemple) :**
+    ```json
+    {
+      "name": "my-ts-project",
+      "version": "1.0.0",
+      "description": "",
+      "main": "dist/index.js",
+      "scripts": {
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+      },
+      "keywords": [],
+      "author": "",
+      "license": "ISC",
+      "devDependencies": {
+        "@types/node": "^18.0.0",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.0.0"
+      },
+      "dependencies": {
+        "express": "^4.18.2",
+        "pg": "^8.11.3"
+      }
+    }
+    ```
+    *(N'oubliez pas d'installer `ts-node-dev` comme dépendance de développement)*
+
+3.  **Démarrer en mode développement :**
+    ```bash
+    docker-compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+    ```
+    *   `--build` force la reconstruction des images, utile si votre `Dockerfile` ou le code a changé.
+    *   Votre application sera accessible sur `http://localhost:3000`. Les changements dans votre code source `src/` devraient être reflétés automatiquement grâce à `ts-node-dev` et le volume monté.
+
+4.  **Démarrer en mode production (ou "standalone") :**
+    ```bash
+    docker-compose -f docker-compose.yml up --build
+    ```
+    *   Ceci construira l'image une fois et lancera l'application sans montage de code, en utilisant l'image compilée.
+
+5.  **Arrêter les services :**
+    ```bash
+    docker-compose down
+    ```
+    *   Ajoutez `--volumes` si vous voulez aussi supprimer les volumes nommés (ce qui effacera les données de la base de données !).
+
+---
+
+Ce setup vous offre une base solide pour développer et déployer votre application TypeScript avec Docker Compose, en distinguant clairement les besoins du développement de ceux de la production.
